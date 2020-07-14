@@ -34,6 +34,12 @@ RRT_PLANNER_FREQ = 10
 ENV_SIZE = 500.0
 OBSTACLE_ZONE = 0.0
 
+# parameters for reward
+R_FOUND_PATH = 20000
+R_CREATE_NODE = 0
+R_INVALID_NODE = -2
+R_NO_PATH = -200
+
 DEBUG = False
 
 # if PLOT_3D = False, plot the 2d version
@@ -751,7 +757,7 @@ class RRTEnv(gym.Env):
         return self.reset()
 
 
-    def step(self, chosen_grid_cell_idx):
+    def step(self, chosen_grid_cell_idx, t, max_step):
         """
         In each step, we will generate an additional node in the RRT tree.
 
@@ -784,13 +790,16 @@ class RRTEnv(gym.Env):
         if path != None:
             self.state["path"] = path
 
-        if done and path != None:
-            reward = 200
-        elif path != None:
-            reward = 0
+        if done and type(path) == list:
+            # found a path
+            path_length = self.rrt_planner.cal_length(path)
+            reward = -path_length
+        elif t == max_step - 1 and (not done) and type(path) != list:
+            # did not find a path
+            reward = R_NO_PATH
         else:
-            # TODO: For now, the reward encourages using less time to plan the path
-            reward = -1
+            # intermediate planning does not give any reward
+            reward = 0
 
         return self.state, reward, done, {}
 
