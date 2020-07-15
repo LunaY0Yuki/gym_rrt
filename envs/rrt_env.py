@@ -17,7 +17,6 @@ from matplotlib.widgets import Button
 from matplotlib.widgets import CheckButtons
 import matplotlib.path as mpath
 
-# TODO: not relevant
 # auv's max speed (unit: m/s)
 AUV_MAX_V = 2.0
 AUV_MIN_V = 0.1
@@ -25,23 +24,33 @@ AUV_MIN_V = 0.1
 #   TODO: Currently, the track_way_point function has K_P == 1, so this is the range for w. Might change in the future?
 AUV_MAX_W = np.pi/8
 
+# shark's speed (unit: m/s)
+SHARK_MIN_V = 0.5
+SHARK_MAX_V = 1
+SHARK_MAX_W = np.pi/8
+
 RRT_PLANNER_FREQ = 10
+
+# the maximum range between the auv and shark to be considered that the auv has reached the shark
+END_GAME_RADIUS = 3.0
+FOLLOWING_RADIUS = 50.0
+
+# the auv will receive an immediate negative reward if it is close to the obstacles
+OBSTACLE_ZONE = 0.0
+WALL_ZONE = 10.0
+
+# constants for reward
+R_FOUND_PATH = 300
+R_CREATE_NODE = 0
+R_INVALID_NODE = -1
 
 # size of the observation space
 # the coordinates of the observation space will be based on 
 #   the ENV_SIZE and the inital position of auv and the shark
 # (unit: m)
 ENV_SIZE = 500.0
-OBSTACLE_ZONE = 0.0
-
-# parameters for reward
-R_FOUND_PATH = 20000
-R_CREATE_NODE = 0
-R_INVALID_NODE = -2
-R_NO_PATH = -200
 
 DEBUG = False
-
 # if PLOT_3D = False, plot the 2d version
 PLOT_3D = False
 
@@ -128,10 +137,12 @@ class Live3DGraph:
 ============================================================================
 """
 
+"""a wrapper class to represent states for motion planning
+    including x, y, z, theta, v, w, and time stamp"""
 class Motion_plan_state:
-    def __init__(self,x,y,z=0,theta=0,v=0,w=0, traj_time_stamp=0, plan_time_stamp=0, size=0):
-        """a wrapper class to represent states for motion planning
-        including x, y, z, theta, v, w, and time stamp"""
+    #class for motion planning
+
+    def __init__(self,x,y,z=0,theta=0,v=0,w=0, traj_time_stamp=0, plan_time_stamp=0, size=0, rl_state_id = None):
         self.x = x
         self.y = y
         self.z = z
@@ -141,46 +152,48 @@ class Motion_plan_state:
         self.traj_time_stamp = traj_time_stamp
         self.plan_time_stamp = plan_time_stamp
         self.size = size
+        self.rl_state_id = rl_state_id
+
         self.parent = None
         self.path = []
         self.length = 0
         self.cost = []
 
     def __repr__(self):
-        # goal location in 2D
-        if self.z == 0 and self.theta == 0 and self.v == 0 and self.w == 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
-            return ("MPS: [x=" + str(self.x) + ", y="  + str(self.y) + "]")
-        # goal location in 3D
-        elif self.theta == 0 and self.v == 0 and self.w == 0 and self.size == 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
-            return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", z=" + str(self.z) + "]"
-        # obstable location in 3D
-        elif self.size != 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
-            return "MPS: [x=" + str(self.x) + ", y=" + str(self.y) + ", z=" + str(self.z) + ", size=" + str(self.size) + "]"
-        # location for Dubins Path in 2D
-        elif self.z ==0 and self.v == 0 and self.w == 0:
-            return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", theta=" + str(self.theta) + ", trag_time=" + str(self.traj_time_stamp) + ", plan_time=" + str(self.plan_time_stamp) + "]"
-        else: 
-            return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", z=" + str(self.z) +\
-                ", theta=" + str(self.theta)  + ", v=" + str(self.v) + ", w=" + str(self.w) +\
-                ", trag_time=" + str(self.traj_time_stamp) +  ", plan_time="+  str(self.plan_time_stamp) + "]"
+        # # goal location in 2D
+        # if self.z == 0 and self.theta == 0 and self.v == 0 and self.w == 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
+        #     return ("MPS: [x=" + str(self.x) + ", y="  + str(self.y) + "]")
+        # # goal location in 3D
+        # elif self.theta == 0 and self.v == 0 and self.w == 0 and self.size == 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
+        #     return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", z=" + str(self.z) + "]"
+        # # obstable location in 3D
+        # elif self.size != 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
+        #     return "MPS: [x=" + str(self.x) + ", y=" + str(self.y) + ", z=" + str(self.z) + ", size=" + str(self.size) + "]"
+        # # location for Dubins Path in 2D
+        # elif self.z ==0 and self.v == 0 and self.w == 0:
+        #     return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", theta=" + str(self.theta) + ", trag_time=" + str(self.traj_time_stamp) + ", plan_time=" + str(self.plan_time_stamp) + ", state_id=" +  str(self.rl_state_id) + "]"
+        # else: 
+        return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", z=" + str(self.z) +\
+            ", theta=" + str(self.theta)  + ", v=" + str(self.v) + ", w=" + str(self.w) +\
+            ", trag_time=" + str(self.traj_time_stamp) +  ", plan_time="+  str(self.plan_time_stamp) + ", state_id=" +  str(self.rl_state_id) + "]"
 
     def __str__(self):
-        # goal location in 2D
-        if self.z == 0 and self.theta == 0 and self.v == 0 and self.w == 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
-            return ("MPS: [x=" + str(self.x) + ", y="  + str(self.y) + "]")
-        # goal location in 3D
-        elif self.theta == 0 and self.v == 0 and self.w == 0 and self.size == 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
-            return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", z=" + str(self.z) + "]"
-        # obstable location in 3D
-        elif self.size != 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
-            return "MPS: [x=" + str(self.x) + ", y=" + str(self.y) + ", z=" + str(self.z) + ", size=" + str(self.size) + "]"
-        # location for Dubins Path in 2D
-        elif self.z ==0 and self.v == 0 and self.w == 0:
-            return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", theta=" + str(self.theta) + ", trag_time=" + str(self.traj_time_stamp) + ", plan_time=" + str(self.plan_time_stamp) + "]"
-        else: 
-            return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", z=" + str(self.z) +\
-                ", theta=" + str(self.theta)  + ", v=" + str(self.v) + ", w=" + str(self.w) +\
-                ", trag_time=" + str(self.traj_time_stamp) +  ", plan_time="+  str(self.plan_time_stamp) + "]"
+        # # goal location in 2D
+        # if self.z == 0 and self.theta == 0 and self.v == 0 and self.w == 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
+        #     return ("MPS: [x=" + str(self.x) + ", y="  + str(self.y) + "]")
+        # # goal location in 3D
+        # elif self.theta == 0 and self.v == 0 and self.w == 0 and self.size == 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
+        #     return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", z=" + str(self.z) + "]"
+        # # obstable location in 3D
+        # elif self.size != 0 and self.traj_time_stamp == 0 and self.plan_time_stamp == 0:
+        #     return "MPS: [x=" + str(self.x) + ", y=" + str(self.y) + ", z=" + str(self.z) + ", size=" + str(self.size) + "]"
+        # # location for Dubins Path in 2D
+        # elif self.z ==0 and self.v == 0 and self.w == 0:
+        #     return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", theta=" + str(self.theta) + ", trag_time=" + str(self.traj_time_stamp) + ", plan_time=" + str(self.plan_time_stamp) + ", state_id=" +  str(self.rl_state_id) + "]"
+        # else: 
+        return "MPS: [x=" + str(self.x) + ", y="  + str(self.y) + ", z=" + str(self.z) +\
+            ", theta=" + str(self.theta)  + ", v=" + str(self.v) + ", w=" + str(self.w) +\
+            ", trag_time=" + str(self.traj_time_stamp) +  ", plan_time="+  str(self.plan_time_stamp) + ", state_id=" +  str(self.rl_state_id) + "]"
 
 """
 ============================================================================
@@ -259,6 +272,10 @@ class Planner_RRT:
         
         # a list of motion_plan_state
         self.mps_list = [self.start]
+        self.time_bin = {}
+
+        # if minimum path length is not achieved within maximum iteration, return the latest path
+        self.last_path = []
 
         # setting parameters for path planning
         self.exp_rate = exp_rate
@@ -362,7 +379,7 @@ class Planner_RRT:
         return path, step
 
 
-    def generate_one_node(self, grid_cell, min_length=250):
+    def generate_one_node(self, grid_cell, step_num = None, min_length=250):
         """
         Based on the grid cell, randomly pick a node to expand the tree from from
 
@@ -372,7 +389,7 @@ class Planner_RRT:
             new_node
         """
         if grid_cell.node_list == []:
-            print("hmmmm invalid grid cell pic")     
+            print("hmmmm invalid grid cell pick")     
             print(grid_cell)
             print("node list")
             print(grid_cell.node_list)
@@ -382,7 +399,7 @@ class Planner_RRT:
         # randomly pick a node from the grid cell   
         rand_node = random.choice(grid_cell.node_list)
 
-        new_node = self.steer(rand_node, self.dist_to_end, self.diff_max, self.freq)
+        new_node = self.steer(rand_node, self.dist_to_end, self.diff_max, self.freq, step_num=step_num)
 
         valid_new_node = False
         
@@ -394,7 +411,7 @@ class Planner_RRT:
             self.add_node_to_grid(new_node)
             valid_new_node = True
 
-        final_node = self.connect_to_goal_curve_alt(self.mps_list[-1], self.exp_rate)
+        final_node = self.connect_to_goal_curve_alt(self.mps_list[-1], self.exp_rate, step_num=step_num)
 
         # if we can create a path between the newly generated node and the goal
         if self.check_collision_free(final_node, self.obstacle_list):
@@ -408,13 +425,13 @@ class Planner_RRT:
             return False, None
 
 
-    def steer(self, mps, dist_to_end, diff_max, freq, velocity=1, traj_time_stamp=False):
+    def steer(self, mps, dist_to_end, diff_max, freq, velocity = 1, traj_time_stamp = False, step_num = None):
         """
         """
         if traj_time_stamp:
-            new_mps = Motion_plan_state(mps.x, mps.y, theta = mps.theta, traj_time_stamp=mps.traj_time_stamp)
+            new_mps = Motion_plan_state(mps.x, mps.y, theta = mps.theta, traj_time_stamp = mps.traj_time_stamp, rl_state_id = step_num)
         else:
-            new_mps = Motion_plan_state(mps.x, mps.y, theta = mps.theta, plan_time_stamp=time.time()-self.t_start, traj_time_stamp=mps.traj_time_stamp)
+            new_mps = Motion_plan_state(mps.x, mps.y, theta = mps.theta, plan_time_stamp = time.time()-self.t_start, traj_time_stamp = mps.traj_time_stamp, rl_state_id = step_num)
 
         new_mps.path = [mps]
 
@@ -442,7 +459,7 @@ class Planner_RRT:
                 else:
                     new_mps.plan_time_stamp = time.time() - self.t_start
                     new_mps.traj_time_stamp += (math.sqrt(delta_x ** 2 + delta_y ** 2)) / velocity
-                new_mps.path.append(Motion_plan_state(new_mps.x, new_mps.y, theta=new_mps.theta, traj_time_stamp=new_mps.traj_time_stamp, plan_time_stamp=new_mps.plan_time_stamp))
+                new_mps.path.append(Motion_plan_state(new_mps.x, new_mps.y, theta=new_mps.theta, traj_time_stamp=new_mps.traj_time_stamp, plan_time_stamp=new_mps.plan_time_stamp, rl_state_id = step_num))
 
         new_mps.path[0] = mps
 
@@ -530,12 +547,12 @@ class Planner_RRT:
         plt.plot(xl, yl, color)
     
     
-    def connect_to_goal_curve_alt(self, mps, exp_rate):
-        new_mps = Motion_plan_state(mps.x, mps.y, theta=mps.theta, traj_time_stamp=mps.traj_time_stamp)
+    def connect_to_goal_curve_alt(self, mps, exp_rate, step_num = None):
+        new_mps = Motion_plan_state(mps.x, mps.y, theta = mps.theta, traj_time_stamp = mps.traj_time_stamp, rl_state_id = step_num)
         theta_0 = new_mps.theta
         _, theta = self.get_distance_angle(mps, self.goal)
         diff = theta - theta_0
-        diff = angle_wrap(diff)
+        diff = self.angle_wrap(diff)
         
         if abs(diff) > math.pi / 2:
             return
@@ -547,7 +564,7 @@ class Planner_RRT:
 
         # arc
         if phi_G - new_mps.theta != 0:
-            phi = 2 * angle_wrap(phi_G - new_mps.theta)
+            phi = 2 * self.angle_wrap(phi_G - new_mps.theta)
             # prevent a dividing by 0 error
         else:
             return
@@ -577,10 +594,19 @@ class Planner_RRT:
             new_mps.x = x_C + radius * math.sin(ang_vel * i + theta_0)
             new_mps.y = y_C - radius * math.cos(ang_vel * i + theta_0)
             new_mps.theta = ang_vel * i + theta_0
-            new_mps.path.append(Motion_plan_state(new_mps.x, new_mps.y, theta = new_mps.theta, plan_time_stamp=time.time()-self.t_start))
+            new_mps.path.append(Motion_plan_state(new_mps.x, new_mps.y, theta = new_mps.theta, plan_time_stamp=time.time()-self.t_start, rl_state_id = step_num))
         
         return new_mps
 
+    def angle_wrap(self, ang):
+        if -math.pi <= ang <= math.pi:
+            return ang
+        elif ang > math.pi: 
+            ang += (-2 * math.pi)
+            return self.angle_wrap(ang)
+        elif ang < -math.pi: 
+            ang += (2 * math.pi)
+            return self.angle_wrap(ang)
 
     def check_collision_free(self, mps, obstacleList):
         """
@@ -633,7 +659,6 @@ class Planner_RRT:
 
         return (within_x_bound and within_y_bound)
 
-
     def get_distance_angle(self, start_mps, end_mps):
         """
         Return
@@ -658,7 +683,7 @@ class Planner_RRT:
 """
 ============================================================================
 
-    Class - RRT Env (Open AI Gym Environment)
+    Class - RRT Env
 
 ============================================================================
 """
@@ -756,8 +781,7 @@ class RRTEnv(gym.Env):
         
         return self.reset()
 
-
-    def step(self, chosen_grid_cell_idx, t, max_step):
+    def step(self, chosen_grid_cell_idx, step_num):
         """
         In each step, we will generate an additional node in the RRT tree.
 
@@ -777,7 +801,7 @@ class RRTEnv(gym.Env):
 
         chosen_grid_cell = self.rrt_planner.env_grid[chosen_grid_cell_row_idx][chosen_grid_cell_col_idx]
 
-        done, path = self.rrt_planner.generate_one_node(chosen_grid_cell)
+        done, path = self.rrt_planner.generate_one_node(chosen_grid_cell, step_num)
 
         # TODO: how we are updating the grid's info and the has node array is very inefficient
         self.state["rrt_grid"] = self.convert_rrt_grid_to_1D(self.rrt_planner.env_grid)
@@ -786,21 +810,20 @@ class RRTEnv(gym.Env):
 
         self.state["rrt_grid_num_of_nodes_only"] = self.convert_rrt_grid_to_1D_num_of_nodes_only(self.rrt_planner.env_grid)
 
-        # if the RRT planner has found a path in this step
         if path != None:
             self.state["path"] = path
 
-        if done and type(path) == list:
-            # found a path
-            path_length = self.rrt_planner.cal_length(path)
-            reward = -path_length
-        elif t == max_step - 1 and (not done) and type(path) != list:
-            # did not find a path
-            reward = R_NO_PATH
+        # if the RRT planner has found a path in this step
+        if done and path != None:
+            reward = R_FOUND_PATH
+        elif path != None:
+            # if the RRT planner adds a new node
+            reward = R_CREATE_NODE
         else:
-            # intermediate planning does not give any reward
-            reward = 0
-
+            # TODO: For now, the reward encourages using less time to plan the path
+            reward = R_INVALID_NODE
+        
+        
         return self.state, reward, done, {}
 
 
@@ -830,7 +853,6 @@ class RRTEnv(gym.Env):
                 rrt_grid_1D_array.append(len(grid_cell.node_list))
 
         return np.array(rrt_grid_1D_array)
-
 
     def generate_rrt_grid_has_node_array (self, rrt_grid):
         """
@@ -872,6 +894,24 @@ class RRTEnv(gym.Env):
         return np.sqrt(delta_x**2 + delta_y**2)
 
     
+    def within_follow_range(self, auv_pos, shark_pos):
+        """
+        Check if the auv is within FOLLOWING_RADIUS of the shark
+
+        Parameters:
+            auv_pos - an array / a numpy array
+            shark_pos - an array / a numpy array
+                both have the format: [x_pos, y_pos, z_pos, theta]
+        """
+        auv_shark_range = self.calculate_range(auv_pos, shark_pos)
+        if auv_shark_range <= FOLLOWING_RADIUS:
+            if DEBUG:
+                print("Within the following range")
+            return True
+        else:
+            return False
+
+    
     def check_collision(self, auv_pos):
         """
         Check if the auv at the current state is hitting any obstacles
@@ -886,7 +926,34 @@ class RRTEnv(gym.Env):
                 print("Hit an obstacle")
                 return True
         return False
- 
+
+
+    def check_close_to_obstacles(self, auv_pos):
+        """
+        Check if the auv at the current state is close to any obstacles
+        (Within a circular region with radius: obstacle's radius + OBSTACLE_ZONE)
+
+        Parameter:
+            auv_pos - an array / a np array [x, y, z, theta]
+        """
+        for obs in self.obstacle_array:
+            distance = self.calculate_range(auv_pos, obs)
+            # obs[3] indicates the size of the obstacle
+            if distance <= (obs[3] + OBSTACLE_ZONE):
+                if DEBUG: 
+                    print("Close to an obstacles")
+                return True
+        return False
+
+
+    def check_close_to_walls(self, auv_pos, dist_from_walls_array):
+        for dist_from_wall in dist_from_walls_array:
+            if dist_from_wall <= WALL_ZONE:
+                if DEBUG:
+                    print("Close to the wall")
+                return True
+        return False
+    
 
     def update_num_time_visited_for_habitats(self, habitats_array, visited_habitat_cell):
         """
@@ -996,6 +1063,7 @@ class RRTEnv(gym.Env):
         if new_state != None and type(new_state) != list:
             # draw the new edge, which is not a successful path
             self.live_graph.ax_2D.plot([point.x for point in new_state.path], [point.y for point in new_state.path], '-', color="#000000")
+            self.live_graph.ax_2D.plot(new_state.x, new_state.y, 'o', color="#000000")
         elif new_state != None and type(new_state) == list:
             # if we are supposed to draw the final path  
             # new_state is now a list of nodes
