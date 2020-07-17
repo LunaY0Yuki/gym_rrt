@@ -54,6 +54,7 @@ DEBUG = False
 # if PLOT_3D = False, plot the 2d version
 PLOT_3D = False
 
+
 """
 ============================================================================
 
@@ -203,34 +204,57 @@ class Motion_plan_state:
 ============================================================================
 """
 class Grid_cell_RRT:
-    """
-    A wrapper class to represent state of a grid cell in RRT planning
-    """
-    def __init__(self, x, y, side_length = 1):
+    def __init__(self, x, y, side_length = 1, num_of_subsections = 8):
         """
         Parameters:
             x - x coordinates of the bottom left corner of the grid cell
             y - y coordinates of the bottom left corner of the grid cell
+            side_length - side_length of the square grid cell
+            sub_sections - how many subsections (based on theta) should the grid cell be split into
+                the subsection are created in counter-clock wise direction (similar to a unit circle)
+                However, once theta > pi, it becomes negative
         """
         self.x = x
         self.y = y
         self.side_length = side_length
-        self.node_list = []
+        self.subsection_cells = []
+
+        self.delta_theta = float(2.0 * np.pi) / float(num_of_subsections)
+        
+        theta = 0.0
+        # the node list will go in counter-clock wise direction
+        for i in range(num_of_subsections):
+            self.subsection_cells.append(self.Subsection_grid_cell_RRT(theta))
+            theta = angle_wrap(theta + self.delta_theta)
 
     def has_node(self):
         """
         Return:
             True - if there is any RRT nodes in the the grid cell
         """
-        return (not (self.node_list == []))
+        for subsection in self.subsection_cells:
+            if subsection.node_array != []:
+                return True
+        return False
 
     def __repr__(self):
         return "RRT Grid: [x=" + str(self.x) + ", y="  + str(self.y) + ", side length=" + str(self.side_length) +\
-             "], node list: " + str(self.node_list)
+             "], node list: " + str(self.subsection_cells)
 
     def __str__(self):
         return "RRT Grid: [x=" + str(self.x) + ", y="  + str(self.y) + ", side length=" + str(self.side_length) +\
-             "], node list: " + str(self.node_list)
+             "], node list: " + str(self.subsection_cells)
+
+    class Subsection_grid_cell_RRT:
+        def __init__(self, theta):
+            self.theta = theta
+            self.node_array = []
+
+        def __repr__(self):
+            return "Subsec: theta=" + str(self.theta) + ", node list: " + str(self.node_array)
+
+        def __str__(self):
+            return "Subsec: theta=" + str(self.theta) + ", node list: " + str(self.node_array)
 
 """
 ============================================================================
@@ -243,7 +267,7 @@ class Planner_RRT:
     """
     Class for RRT planning
     """
-    def __init__(self, start, goal, boundary, obstacles, habitats, exp_rate = 1, dist_to_end = 2, diff_max = 0.5, freq = 50, cell_side_length = 2):
+    def __init__(self, start, goal, boundary, obstacles, habitats, exp_rate = 1, dist_to_end = 2, diff_max = 0.5, freq = 50, cell_side_length = 2, subsections_in_cell = 8):
         '''
         Parameters:
             start - initial Motion_plan_state of AUV, [x, y, z, theta, v, w, time_stamp]
@@ -257,9 +281,10 @@ class Planner_RRT:
 
         self.boundary_point = boundary
         self.cell_side_length = cell_side_length
+        self.subsections_in_cell = subsections_in_cell
 
         # discretize the environment into grids
-        self.discretize_env(self.cell_side_length)
+        self.discretize_env(self.cell_side_length, self.subsections_in_cell)
         
         self.occupied_grid_cells_array = []
 
@@ -272,7 +297,6 @@ class Planner_RRT:
         
         # a list of motion_plan_state
         self.mps_list = [self.start]
-        self.time_bin = {}
 
         # if minimum path length is not achieved within maximum iteration, return the latest path
         self.last_path = []
@@ -286,7 +310,7 @@ class Planner_RRT:
         self.t_start = time.time()
 
 
-    def discretize_env(self, cell_side_length):
+    def discretize_env(self, cell_side_length, subsections_in_cell):
         """
         Separate the environment into grid
         """
@@ -302,7 +326,7 @@ class Planner_RRT:
             for col in range(int(env_width) // int(cell_side_length)):
                 env_cell_x = env_btm_left_corner.x + col * cell_side_length
                 env_cell_y = env_btm_left_corner.y + row * cell_side_length
-                self.env_grid[row].append(Grid_cell_RRT(env_cell_x, env_cell_y, side_length = cell_side_length))
+                self.env_grid[row].append(Grid_cell_RRT(env_cell_x, env_cell_y, side_length = cell_side_length, num_of_subsections=subsections_in_cell))
 
 
     def print_env_grid(self):
@@ -323,6 +347,7 @@ class Planner_RRT:
         Parameter:
             mps - a motion plan state object, represent the RRT node that we are trying add to the grid
         """
+        # from the x and y position, we can figure out which grid cell does the new node belong to
         hab_index_row = int(mps.y / self.cell_side_length)
         hab_index_col = int(mps.x / self.cell_side_length)
 
@@ -334,11 +359,40 @@ class Planner_RRT:
             print("auv is out of the habitat environment bound horizontally")
             return
 
-        self.env_grid[hab_index_row][hab_index_col].node_list.append(mps)
+        # then, we need to figure out which subsection dooes the new node belong to
+        raw_hab_index_subsection = mps.theta / self.env_grid[hab_index_row][hab_index_col].delta_theta
+
+        # round down the index to an integer
+        hab_index_subsection = math.floor(raw_hab_index_subsection)
+
+        # if index >= 0, then it has already found the right subsection
+        # however, if index < 0, we have to do an extra step to find the right index
+        if hab_index_subsection < 0:
+            hab_index_subsection = int(self.subsections_in_cell + hab_index_subsection)
+
+        if hab_index_subsection == self.subsections_in_cell:
+            print("why invalid subsection ;-;")
+            print(mps)
+            print("found roow and col")
+            print(hab_index_col)
+            print(hab_index_col)
+            print("all cells")
+            print(self.env_grid[hab_index_row][hab_index_col])
+            print("subsections")
+            print(self.env_grid[hab_index_row][hab_index_col].subsection_cells)
+            print("raw")
+            print(raw_hab_index_subsection)
+            print("found index")
+            print(hab_index_subsection)
+            text = input("stop")
+
+            hab_index_subsection -= 1
+
+        self.env_grid[hab_index_row][hab_index_col].subsection_cells[hab_index_subsection].node_array.append(mps)
 
         # add the grid cell into the occupied grid cell array if it hasn't been added
-        if len(self.env_grid[hab_index_row][hab_index_col].node_list) == 1:
-            self.occupied_grid_cells_array.append((hab_index_row, hab_index_col))
+        if len(self.env_grid[hab_index_row][hab_index_col].subsection_cells[hab_index_subsection].node_array) == 1:
+            self.occupied_grid_cells_array.append((hab_index_row, hab_index_col, hab_index_subsection))
 
 
     def planning(self, max_step = 200, min_length = 250, plan_time=True):
@@ -363,14 +417,15 @@ class Planner_RRT:
         for _ in range(max_step):
 
             # pick the row index and col index for the grid cell where the tree will get expanded
-            grid_cell_row, grid_cell_col = random.choice(self.occupied_grid_cells_array)
+            grid_cell_row, grid_cell_col, grid_cell_subsection = random.choice(self.occupied_grid_cells_array)
 
-            done, path = self.generate_one_node(self.env_grid[grid_cell_row][grid_cell_col])
+            done, path = self.generate_one_node(self.env_grid[grid_cell_row][grid_cell_col].subsection_cells[grid_cell_subsection])
 
             # if (not done) and path != None:
             #     self.draw_graph(path)
             # elif done:
             #     plt.plot([mps.x for mps in path], [mps.y for mps in path], '-r')
+
             step += 1
 
             if done:
@@ -388,16 +443,16 @@ class Planner_RRT:
             path - the collision-free path if there is one, otherwise it's null
             new_node
         """
-        if grid_cell.node_list == []:
+        if grid_cell.node_array == []:
             print("hmmmm invalid grid cell pick")     
             print(grid_cell)
             print("node list")
-            print(grid_cell.node_list)
+            print(grid_cell.node_array)
             text = input("stop")
             return False, None
-        
+
         # randomly pick a node from the grid cell   
-        rand_node = random.choice(grid_cell.node_list)
+        rand_node = random.choice(grid_cell.node_array)
 
         new_node = self.steer(rand_node, self.dist_to_end, self.diff_max, self.freq, step_num=step_num)
 
@@ -449,7 +504,7 @@ class Planner_RRT:
                 phi = (s1 + s2)/ (2 * radius)
                 
                 ori_theta = new_mps.theta
-                new_mps.theta += phi
+                new_mps.theta = self.angle_wrap(new_mps.theta + phi)
                 delta_x = radius * (math.sin(new_mps.theta) - math.sin(ori_theta))
                 delta_y = radius * (-math.cos(new_mps.theta) + math.cos(ori_theta))
                 new_mps.x += delta_x
@@ -527,7 +582,8 @@ class Planner_RRT:
         if rnd != None:
             # self.ax.plot(rnd.x, rnd.y, ",", color="#000000")
 
-            self.ax.plot([point.x for point in rnd.path], [point.y for point in rnd.path], '-', color="#000000")
+            plt.plot([point.x for point in rnd.path], [point.y for point in rnd.path], '-', color="#000000")
+            plt.plot(rnd.x, rnd.y, 'o', color="#000000")
         else:
             for mps in self.mps_list:
                 if mps.parent:
@@ -732,7 +788,7 @@ class RRTEnv(gym.Env):
         self.visited_unique_habitat_count = 0
 
 
-    def init_env(self, auv_init_pos, shark_init_pos, boundary_array, grid_cell_side_length, obstacle_array = [], habitat_grid = None):
+    def init_env(self, auv_init_pos, shark_init_pos, boundary_array, grid_cell_side_length, num_of_subsections, obstacle_array = [], habitat_grid = None):
         """
         Initialize the environment based on the auv and shark's initial position
 
@@ -767,6 +823,7 @@ class RRTEnv(gym.Env):
         self.boundary_array = boundary_array
 
         self.cell_side_length = grid_cell_side_length
+        self.num_of_subsections = num_of_subsections
 
         # declare the observation space (required by OpenAI)
         self.observation_space = spaces.Dict({
@@ -795,11 +852,33 @@ class RRTEnv(gym.Env):
             done - float, whether the episode has ended
             info - dictionary, can provide debugging info (TODO: right now, it's just an empty one)
         """
-        # convert the index for grid cells in the 1D array back to 2D array
-        chosen_grid_cell_row_idx = chosen_grid_cell_idx // len(self.rrt_planner.env_grid[0])
-        chosen_grid_cell_col_idx = chosen_grid_cell_idx % len(self.rrt_planner.env_grid[0])
+        # print("picked unprocessed index")
+        # print(chosen_grid_cell_idx)
 
-        chosen_grid_cell = self.rrt_planner.env_grid[chosen_grid_cell_row_idx][chosen_grid_cell_col_idx]
+        # print("state")
+        # for i in range(len(self.state["rrt_grid"])):
+        #     print(str(i) + " : " + str(self.state["rrt_grid"][i]))
+
+        grid_cell_index = chosen_grid_cell_idx // self.num_of_subsections
+        subsection_index = chosen_grid_cell_idx % self.num_of_subsections
+        
+        # print("grid cell index")
+        # print(grid_cell_index)
+
+        # print("subsection index")
+        # print(subsection_index)
+
+        # convert the index for grid cells in the 1D array back to 2D array
+        chosen_grid_cell_row_idx = grid_cell_index // len(self.rrt_planner.env_grid[0])
+        chosen_grid_cell_col_idx = grid_cell_index % len(self.rrt_planner.env_grid[0])
+
+        # print("row and col")
+        # print(chosen_grid_cell_row_idx)
+        # print(chosen_grid_cell_col_idx)
+
+        # text = input("stop")
+
+        chosen_grid_cell = self.rrt_planner.env_grid[chosen_grid_cell_row_idx][chosen_grid_cell_col_idx].subsection_cells[subsection_index]
 
         done, path = self.rrt_planner.generate_one_node(chosen_grid_cell, step_num)
 
@@ -836,7 +915,8 @@ class RRTEnv(gym.Env):
 
         for row in rrt_grid:
             for grid_cell in row:
-                rrt_grid_1D_array.append([grid_cell.x, grid_cell.y, len(grid_cell.node_list)])
+                for subsection in grid_cell.subsection_cells:
+                    rrt_grid_1D_array.append([grid_cell.x, grid_cell.y, subsection.theta, len(subsection.node_array)])
 
         return np.array(rrt_grid_1D_array)
 
@@ -850,7 +930,8 @@ class RRTEnv(gym.Env):
 
         for row in rrt_grid:
             for grid_cell in row:
-                rrt_grid_1D_array.append(len(grid_cell.node_list))
+                for subsection in grid_cell.subsection_cells:
+                    rrt_grid_1D_array.append(len(subsection.node_array))
 
         return np.array(rrt_grid_1D_array)
 
@@ -864,10 +945,11 @@ class RRTEnv(gym.Env):
 
         for row in rrt_grid:
             for grid_cell in row:
-                if len(grid_cell.node_list) == 0:
-                    has_node_array.append(0)
-                else:
-                    has_node_array.append(1)
+                for subsection in grid_cell.subsection_cells:
+                    if len(subsection.node_array) == 0:
+                        has_node_array.append(0)
+                    else:
+                        has_node_array.append(1)
 
         return np.array(has_node_array)
 
@@ -1009,7 +1091,7 @@ class RRTEnv(gym.Env):
         shark_init_pos = np.array([self.shark_init_pos.x, self.shark_init_pos.y, self.shark_init_pos.z, self.shark_init_pos.theta])
 
         # initialize the RRT planner
-        self.rrt_planner = Planner_RRT(self.auv_init_pos, self.shark_init_pos, self.boundary_array, self.obstacle_array_for_rendering, self.habitats_array_for_rendering, cell_side_length = self.cell_side_length, freq=RRT_PLANNER_FREQ)
+        self.rrt_planner = Planner_RRT(self.auv_init_pos, self.shark_init_pos, self.boundary_array, self.obstacle_array_for_rendering, self.habitats_array_for_rendering, cell_side_length = self.cell_side_length, freq=RRT_PLANNER_FREQ, subsections_in_cell = self.num_of_subsections)
 
         rrt_grid_1D_array = self.convert_rrt_grid_to_1D(self.rrt_planner.env_grid)
         rrt_grid_1D_array_num_of_nodes_only = self.convert_rrt_grid_to_1D_num_of_nodes_only(self.rrt_planner.env_grid)
