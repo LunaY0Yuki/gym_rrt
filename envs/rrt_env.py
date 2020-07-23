@@ -56,7 +56,7 @@ DEBUG = False
 # if PLOT_3D = False, plot the 2d version
 PLOT_3D = False
 
-NODE_THRESHOLD = 20
+NODE_THRESHOLD = 30
 
 """
 ============================================================================
@@ -507,7 +507,6 @@ class Planner_RRT:
                 index_in_1D_array = grid_cell_row * self.size_of_col * self.subsections_in_cell + grid_cell_col * self.subsections_in_cell + grid_cell_subsection
                 print("too many nodes generated from this grid cell")
                 self.has_node_array[index_in_1D_array] = 0
-                text = input("stop")
 
         final_node = self.connect_to_goal_curve_alt(self.mps_list[-1], self.exp_rate, step_num=step_num)
 
