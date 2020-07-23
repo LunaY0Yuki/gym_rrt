@@ -44,7 +44,7 @@ R_FOUND_PATH = 300
 R_CREATE_NODE = 0
 R_INVALID_NODE = -1
 
-REMOVE_CELL_WITH_MANY_NODES = True
+REMOVE_CELL_WITH_MANY_NODES = False
 
 # size of the observation space
 # the coordinates of the observation space will be based on 
