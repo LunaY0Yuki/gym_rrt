@@ -8,14 +8,14 @@ import random
 import math
 import time
 
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-import matplotlib.patches as mpatches
-from matplotlib.patches import Circle, Rectangle
-import mpl_toolkits.mplot3d.art3d as Art3d
-from matplotlib.widgets import Button
-from matplotlib.widgets import CheckButtons
-import matplotlib.path as mpath
+# import matplotlib.pyplot as plt
+# from mpl_toolkits.mplot3d import Axes3D
+# import matplotlib.patches as mpatches
+# from matplotlib.patches import Circle, Rectangle
+# import mpl_toolkits.mplot3d.art3d as Art3d
+# from matplotlib.widgets import Button
+# from matplotlib.widgets import CheckButtons
+# import matplotlib.path as mpath
 
 # auv's max speed (unit: m/s)
 AUV_MAX_V = 2.0
@@ -44,6 +44,8 @@ R_FOUND_PATH = 300
 R_CREATE_NODE = 0
 R_INVALID_NODE = -1
 
+REMOVE_CELL_WITH_MANY_NODES = True
+
 # size of the observation space
 # the coordinates of the observation space will be based on 
 #   the ENV_SIZE and the inital position of auv and the shark
@@ -54,6 +56,7 @@ DEBUG = False
 # if PLOT_3D = False, plot the 2d version
 PLOT_3D = False
 
+NODE_THRESHOLD = 50
 
 """
 ============================================================================
@@ -267,7 +270,7 @@ class Planner_RRT:
     """
     Class for RRT planning
     """
-    def __init__(self, start, goal, boundary, obstacles, habitats, exp_rate = 1, dist_to_end = 2, diff_max = 0.5, freq = 50, cell_side_length = 2, subsections_in_cell = 8):
+    def __init__(self, start, goal, boundary, obstacles, habitats, exp_rate = 1, dist_to_end = 2, diff_max = 0.5, freq = 50, cell_side_length = 2, subsections_in_cell = 4):
         '''
         Parameters:
             start - initial Motion_plan_state of AUV, [x, y, z, theta, v, w, time_stamp]
@@ -282,6 +285,14 @@ class Planner_RRT:
         self.boundary_point = boundary
         self.cell_side_length = cell_side_length
         self.subsections_in_cell = subsections_in_cell
+
+        # has node array
+        # an 1D array determining whether a grid cell has any nodes
+        # 0 = there isn't any nodes, 1 = there is at least 1 node
+        self.has_node_array = []
+        
+        # a 1D array representing the number of nodes in each grid cell
+        self.rrt_grid_1D_array_num_of_nodes_only = []
 
         # discretize the environment into grids
         self.discretize_env(self.cell_side_length, self.subsections_in_cell)
@@ -321,12 +332,18 @@ class Planner_RRT:
 
         self.env_grid = []
 
-        for row in range(int(env_height) // int(cell_side_length)):
+        self.size_of_row = int(env_height) // int(cell_side_length)
+        self.size_of_col = int(env_width) // int(cell_side_length)
+
+        for row in range(self.size_of_row):
             self.env_grid.append([])
-            for col in range(int(env_width) // int(cell_side_length)):
+            for col in range(self.size_of_col):
                 env_cell_x = env_btm_left_corner.x + col * cell_side_length
                 env_cell_y = env_btm_left_corner.y + row * cell_side_length
                 self.env_grid[row].append(Grid_cell_RRT(env_cell_x, env_cell_y, side_length = cell_side_length, num_of_subsections=subsections_in_cell))
+                # initialize the has_node_array and rrt_grid_1D_array_num_of_nodes_only
+                self.has_node_array += [0] * self.subsections_in_cell
+                self.rrt_grid_1D_array_num_of_nodes_only += [0] * self.subsections_in_cell
 
 
     def print_env_grid(self):
@@ -341,7 +358,7 @@ class Planner_RRT:
             print("----")
 
     
-    def add_node_to_grid(self, mps):
+    def add_node_to_grid(self, mps, remove_cell_with_many_nodes = False):
         """
 
         Parameter:
@@ -374,7 +391,7 @@ class Planner_RRT:
             print("why invalid subsection ;-;")
             print(mps)
             print("found roow and col")
-            print(hab_index_col)
+            print(hab_index_row)
             print(hab_index_col)
             print("all cells")
             print(self.env_grid[hab_index_row][hab_index_col])
@@ -389,10 +406,21 @@ class Planner_RRT:
             hab_index_subsection -= 1
 
         self.env_grid[hab_index_row][hab_index_col].subsection_cells[hab_index_subsection].node_array.append(mps)
+        
+        index_in_1D_array = hab_index_row * self.size_of_col * self.subsections_in_cell + hab_index_col * self.subsections_in_cell + hab_index_subsection
+        # increase the counter for the number of nodes in the grid cell
+        self.rrt_grid_1D_array_num_of_nodes_only[index_in_1D_array] += 1
 
         # add the grid cell into the occupied grid cell array if it hasn't been added
         if len(self.env_grid[hab_index_row][hab_index_col].subsection_cells[hab_index_subsection].node_array) == 1:
             self.occupied_grid_cells_array.append((hab_index_row, hab_index_col, hab_index_subsection))
+
+            self.has_node_array[index_in_1D_array] += 1
+
+        if remove_cell_with_many_nodes and self.rrt_grid_1D_array_num_of_nodes_only[index_in_1D_array] > NODE_THRESHOLD:
+            return True
+        else:
+            return False
 
 
     def planning(self, max_step = 200, min_length = 250, plan_time=True):
@@ -413,13 +441,15 @@ class Planner_RRT:
         # self.init_live_graph()
 
         step = 0
+
+        start_time = time.time()
     
         for _ in range(max_step):
 
             # pick the row index and col index for the grid cell where the tree will get expanded
             grid_cell_row, grid_cell_col, grid_cell_subsection = random.choice(self.occupied_grid_cells_array)
 
-            done, path = self.generate_one_node(self.env_grid[grid_cell_row][grid_cell_col].subsection_cells[grid_cell_subsection])
+            done, path = self.generate_one_node((grid_cell_row, grid_cell_col, grid_cell_subsection))
 
             # if (not done) and path != None:
             #     self.draw_graph(path)
@@ -430,11 +460,13 @@ class Planner_RRT:
 
             if done:
                 break
+        
+        actual_time_duration = time.time() - start_time
 
-        return path, step
+        return path, step, actual_time_duration
 
 
-    def generate_one_node(self, grid_cell, step_num = None, min_length=250):
+    def generate_one_node(self, grid_cell_index, step_num = None, min_length=250, remove_cell_with_many_nodes = False):
         """
         Based on the grid cell, randomly pick a node to expand the tree from from
 
@@ -443,6 +475,10 @@ class Planner_RRT:
             path - the collision-free path if there is one, otherwise it's null
             new_node
         """
+        grid_cell_row, grid_cell_col, grid_cell_subsection = grid_cell_index
+
+        grid_cell = self.env_grid[grid_cell_row][grid_cell_col].subsection_cells[grid_cell_subsection]
+
         if grid_cell.node_array == []:
             print("hmmmm invalid grid cell pick")     
             print(grid_cell)
@@ -463,8 +499,14 @@ class Planner_RRT:
             new_node.parent = rand_node
             new_node.length += rand_node.length
             self.mps_list.append(new_node)
-            self.add_node_to_grid(new_node)
             valid_new_node = True
+
+            remove_the_chosen_grid_cell = self.add_node_to_grid(new_node, remove_cell_with_many_nodes=remove_cell_with_many_nodes)
+
+            if remove_cell_with_many_nodes and remove_the_chosen_grid_cell:
+                index_in_1D_array = grid_cell_row * self.size_of_col * self.subsections_in_cell + grid_cell_col * self.subsections_in_cell + grid_cell_subsection
+                print("too many nodes generated from this grid cell")
+                self.has_node_array[index_in_1D_array] = 0
 
         final_node = self.connect_to_goal_curve_alt(self.mps_list[-1], self.exp_rate, step_num=step_num)
 
@@ -775,7 +817,7 @@ class RRTEnv(gym.Env):
         self.habitats_array = []
         self.habitats_array_for_rendering = []
 
-        self.live_graph = Live3DGraph(PLOT_3D)
+        # self.live_graph = Live3DGraph(PLOT_3D)
 
         self.auv_x_array_plot = []
         self.auv_y_array_plot = []
@@ -878,16 +920,15 @@ class RRTEnv(gym.Env):
 
         # text = input("stop")
 
-        chosen_grid_cell = self.rrt_planner.env_grid[chosen_grid_cell_row_idx][chosen_grid_cell_col_idx].subsection_cells[subsection_index]
+        # chosen_grid_cell = self.rrt_planner.env_grid[chosen_grid_cell_row_idx][chosen_grid_cell_col_idx].subsection_cells[subsection_index]
 
-        done, path = self.rrt_planner.generate_one_node(chosen_grid_cell, step_num)
+        done, path = self.rrt_planner.generate_one_node((chosen_grid_cell_row_idx, chosen_grid_cell_col_idx, subsection_index), step_num, remove_cell_with_many_nodes=REMOVE_CELL_WITH_MANY_NODES)
 
         # TODO: how we are updating the grid's info and the has node array is very inefficient
-        self.state["rrt_grid"] = self.convert_rrt_grid_to_1D(self.rrt_planner.env_grid)
 
-        self.state["has_node"] = self.generate_rrt_grid_has_node_array(self.rrt_planner.env_grid)
+        self.state["has_node"] = np.array(self.rrt_planner.has_node_array)
 
-        self.state["rrt_grid_num_of_nodes_only"] = self.convert_rrt_grid_to_1D_num_of_nodes_only(self.rrt_planner.env_grid)
+        self.state["rrt_grid_num_of_nodes_only"] = np.array(self.rrt_planner.rrt_grid_1D_array_num_of_nodes_only)
 
         if path != None:
             self.state["path"] = path
@@ -1093,19 +1134,28 @@ class RRTEnv(gym.Env):
         # initialize the RRT planner
         self.rrt_planner = Planner_RRT(self.auv_init_pos, self.shark_init_pos, self.boundary_array, self.obstacle_array_for_rendering, self.habitats_array_for_rendering, cell_side_length = self.cell_side_length, freq=RRT_PLANNER_FREQ, subsections_in_cell = self.num_of_subsections)
 
-        rrt_grid_1D_array = self.convert_rrt_grid_to_1D(self.rrt_planner.env_grid)
-        rrt_grid_1D_array_num_of_nodes_only = self.convert_rrt_grid_to_1D_num_of_nodes_only(self.rrt_planner.env_grid)
-        has_node_array = self.generate_rrt_grid_has_node_array(self.rrt_planner.env_grid)
+        # rrt_grid_1D_array = self.convert_rrt_grid_to_1D(self.rrt_planner.env_grid)
+        # rrt_grid_1D_array_num_of_nodes_only = self.convert_rrt_grid_to_1D_num_of_nodes_only(self.rrt_planner.env_grid)
+        # has_node_array = self.generate_rrt_grid_has_node_array(self.rrt_planner.env_grid)
 
         self.state = {
             'auv_pos': auv_init_pos,\
             'shark_pos': shark_init_pos,\
             'obstacles_pos': self.obstacle_array,\
-            'rrt_grid': rrt_grid_1D_array,\
-            'has_node': has_node_array,\
+            'has_node': np.array(self.rrt_planner.has_node_array),\
             'path': None,\
-            'rrt_grid_num_of_nodes_only': rrt_grid_1D_array_num_of_nodes_only,\
+            'rrt_grid_num_of_nodes_only': np.array(self.rrt_planner.rrt_grid_1D_array_num_of_nodes_only),\
         }
+
+        # print("initial state")
+        # print(has_node_array)
+        # print(self.state["has_node"])
+        # print(has_node_array == self.state["has_node"])
+        # print("---")
+        # print(rrt_grid_1D_array_num_of_nodes_only)
+        # print(self.state["rrt_grid_num_of_nodes_only"])
+        # print(rrt_grid_1D_array_num_of_nodes_only == self.state["rrt_grid_num_of_nodes_only"])
+        # text = input("stop")
 
         return self.state
 
