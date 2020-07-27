@@ -7,6 +7,7 @@ import copy
 import random
 import math
 import time
+import sys
 
 # import matplotlib.pyplot as plt
 # from mpl_toolkits.mplot3d import Axes3D
@@ -722,7 +723,7 @@ class Planner_RRT:
                d, _ = self.get_distance_angle(obstacle, point)
                dList.append(d) 
 
-            if min(dList) <= obstacle.size:
+            if (min(dList) + sys.float_info.epsilon) <= obstacle.size:
                 return False  # collision
     
         for point in mps.path:
