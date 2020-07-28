@@ -1155,9 +1155,6 @@ class RRTEnv(gym.Env):
             'empty_slot_tensor': self.empty_slot_tensor,\
         }
 
-        print("in env")
-        print(self.state['shark_pos'])
-
         # print("initial state")
         # print(has_node_array)
         # print(self.state["has_node"])
