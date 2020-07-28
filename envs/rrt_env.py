@@ -8,6 +8,7 @@ import random
 import math
 import time
 import sys
+import torch
 
 # import matplotlib.pyplot as plt
 # from mpl_toolkits.mplot3d import Axes3D
@@ -58,6 +59,9 @@ DEBUG = False
 PLOT_3D = False
 
 NODE_THRESHOLD = 30
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(DEVICE)
 
 """
 ============================================================================
@@ -1143,7 +1147,7 @@ class RRTEnv(gym.Env):
 
         self.state = {
             'auv_pos': auv_init_pos,\
-            'shark_pos': shark_init_pos,\
+            'shark_pos': torch.from_numpy(shark_init_pos).float().to(DEVICE),\
             'obstacles_pos': self.obstacle_array,\
             'has_node': np.array(self.rrt_planner.has_node_array),\
             'path': None,\
